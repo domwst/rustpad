@@ -17,6 +17,8 @@ import languages from "./languages.json";
 import Rustpad, { CursorData, UserInfo } from "./rustpad";
 import useHash from "./useHash";
 
+const CURSOR_LABEL_VISIBLE_MS = 1500;
+
 function getWsUri(id: string) {
   let url = new URL(`api/socket/${id}`, window.location.href);
   url.protocol = url.protocol == "https:" ? "wss:" : "ws:";
@@ -505,7 +507,8 @@ function renderReplayDecorations(
     const user = users[Number(id)];
     if (!user) continue;
     generateReplayCursorStyles(id, user);
-    const active = positionMs - (cursorActivity[Number(id)] ?? 0) < 3000;
+    const active =
+      positionMs - (cursorActivity[Number(id)] ?? 0) < CURSOR_LABEL_VISIBLE_MS;
     for (const cursor of data.cursors) {
       const position = unicodePosition(model, cursor);
       const labelPosition =

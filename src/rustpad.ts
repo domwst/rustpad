@@ -6,6 +6,8 @@ import type {
 } from "monaco-editor/esm/vs/editor/editor.api";
 import { OpSeq } from "rustpad-wasm";
 
+const CURSOR_LABEL_VISIBLE_MS = 1500;
+
 /** Options passed in to the Rustpad constructor. */
 export type RustpadOptions = {
   readonly uri: string;
@@ -65,6 +67,7 @@ class Rustpad {
   private joined: boolean = false;
   private cursorData: CursorData = { cursors: [], selections: [] };
   private closed: boolean = false;
+  private suppressCursorBroadcast: boolean = false;
 
   // Intermittent local editor state
   private lastValue: string = "";
@@ -80,11 +83,11 @@ class Rustpad {
     const cursorUpdate = debounce(() => this.sendCursorData(), 20);
     this.onCursorHandle = options.editor.onDidChangeCursorPosition((e) => {
       this.onCursor(e);
-      cursorUpdate();
+      if (!this.suppressCursorBroadcast) cursorUpdate();
     });
     this.onSelectionHandle = options.editor.onDidChangeCursorSelection((e) => {
       this.onSelection(e);
-      cursorUpdate();
+      if (!this.suppressCursorBroadcast) cursorUpdate();
     });
     this.beforeUnload = (event: BeforeUnloadEvent) => {
       if (this.outstanding) {
@@ -313,8 +316,10 @@ class Rustpad {
     }
 
     this.ignoreChanges = true;
+    this.suppressCursorBroadcast = true;
     this.model.setValue(serverValue);
     this.lastValue = serverValue;
+    this.suppressCursorBroadcast = false;
     this.ignoreChanges = false;
     this.revision = operations.length;
     this.outstanding = undefined;
@@ -325,7 +330,9 @@ class Rustpad {
       operation.delete(unicodeLength(serverValue));
       operation.insert(localValue);
       this.ignoreChanges = true;
+      this.suppressCursorBroadcast = true;
       this.model.setValue(localValue);
+      this.suppressCursorBroadcast = false;
       this.ignoreChanges = false;
       this.lastValue = localValue;
       this.applyClient(operation);
@@ -336,6 +343,7 @@ class Rustpad {
     if (operation.is_noop()) return;
 
     this.ignoreChanges = true;
+    this.suppressCursorBroadcast = true;
     const ops: (string | number)[] = JSON.parse(operation.to_string());
     let index = 0;
 
@@ -388,6 +396,7 @@ class Rustpad {
     }
 
     this.lastValue = this.model.getValue();
+    this.suppressCursorBroadcast = false;
     this.ignoreChanges = false;
 
     this.transformCursors(operation);
@@ -413,7 +422,8 @@ class Rustpad {
         generateCssStyles(hue);
         generateCursorLabelStyles(id, hue, name);
         const active =
-          Date.now() - (this.userCursorActivity[Number(id)] ?? 0) < 3000;
+          Date.now() - (this.userCursorActivity[Number(id)] ?? 0) <
+          CURSOR_LABEL_VISIBLE_MS;
 
         for (const cursor of data.cursors) {
           const position = unicodePosition(this.model, cursor);
