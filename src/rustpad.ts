@@ -10,11 +10,16 @@ import { OpSeq } from "rustpad-wasm";
 export type RustpadOptions = {
   readonly uri: string;
   readonly editor: editor.IStandaloneCodeEditor;
+  readonly userInfo: UserInfo;
+  readonly hostToken: string;
   readonly onConnected?: () => void;
   readonly onDisconnected?: () => void;
   readonly onDesynchronized?: () => void;
   readonly onChangeLanguage?: (language: string) => void;
   readonly onChangeUsers?: (users: Record<number, UserInfo>) => void;
+  readonly onRoomState?: (state: RoomState) => void;
+  readonly onHostToken?: (token: string) => void;
+  readonly onRoomClosed?: (closedAt: number) => void;
   readonly reconnectInterval?: number;
 };
 
@@ -24,18 +29,29 @@ export type UserInfo = {
   readonly hue: number;
 };
 
+export type RoomState = {
+  readonly created_at: number;
+  readonly closed_at: number | null;
+  readonly is_host: boolean;
+  readonly host_token: string | null;
+};
+
+export type CursorData = {
+  cursors: number[];
+  selections: [number, number][];
+};
+
 /** Browser client for Rustpad. */
 class Rustpad {
   private ws?: WebSocket;
   private connecting?: boolean;
-  private recentFailures: number = 0;
   private readonly model: editor.ITextModel;
   private readonly onChangeHandle: IDisposable;
   private readonly onCursorHandle: IDisposable;
   private readonly onSelectionHandle: IDisposable;
   private readonly beforeUnload: (event: BeforeUnloadEvent) => void;
   private readonly tryConnectId: number;
-  private readonly resetFailuresId: number;
+  private readonly cursorLabelRefreshId: number;
 
   // Client-server state
   private me: number = -1;
@@ -44,8 +60,11 @@ class Rustpad {
   private buffer?: OpSeq;
   private users: Record<number, UserInfo> = {};
   private userCursors: Record<number, CursorData> = {};
-  private myInfo?: UserInfo;
+  private userCursorActivity: Record<number, number> = {};
+  private myInfo: UserInfo;
+  private joined: boolean = false;
   private cursorData: CursorData = { cursors: [], selections: [] };
+  private closed: boolean = false;
 
   // Intermittent local editor state
   private lastValue: string = "";
@@ -54,6 +73,7 @@ class Rustpad {
 
   constructor(readonly options: RustpadOptions) {
     this.model = options.editor.getModel()!;
+    this.myInfo = options.userInfo;
     this.onChangeHandle = options.editor.onDidChangeModelContent((e) =>
       this.onChange(e),
     );
@@ -79,16 +99,16 @@ class Rustpad {
     const interval = options.reconnectInterval ?? 1000;
     this.tryConnect();
     this.tryConnectId = window.setInterval(() => this.tryConnect(), interval);
-    this.resetFailuresId = window.setInterval(
-      () => (this.recentFailures = 0),
-      15 * interval,
+    this.cursorLabelRefreshId = window.setInterval(
+      () => this.updateCursors(),
+      1000,
     );
   }
 
   /** Destroy this Rustpad instance and close any sockets. */
   dispose() {
     window.clearInterval(this.tryConnectId);
-    window.clearInterval(this.resetFailuresId);
+    window.clearInterval(this.cursorLabelRefreshId);
     this.onSelectionHandle.dispose();
     this.onCursorHandle.dispose();
     this.onChangeHandle.dispose();
@@ -98,12 +118,14 @@ class Rustpad {
 
   /** Try to set the language of the editor, if connected. */
   setLanguage(language: string): boolean {
+    if (this.closed) return false;
     this.ws?.send(`{"SetLanguage":${JSON.stringify(language)}}`);
     return this.ws !== undefined;
   }
 
   /** Set the user's information. */
   setInfo(info: UserInfo) {
+    if (this.myInfo.name === info.name && this.myInfo.hue === info.hue) return;
     this.myInfo = info;
     this.sendInfo();
   }
@@ -129,22 +151,13 @@ class Rustpad {
       this.options.onConnected?.();
       this.users = {};
       this.options.onChangeUsers?.(this.users);
-      this.sendInfo();
-      this.sendCursorData();
-      if (this.outstanding) {
-        this.sendOperation(this.outstanding);
-      }
+      this.joined = false;
+      this.sendJoin();
     };
     ws.onclose = () => {
       if (this.ws) {
         this.ws = undefined;
         this.options.onDisconnected?.();
-        if (++this.recentFailures >= 5) {
-          // If we disconnect 5 times within 15 reconnection intervals, then the
-          // client is likely desynchronized and needs to refresh.
-          this.dispose();
-          this.options.onDesynchronized?.();
-        }
       } else {
         this.connecting = false;
       }
@@ -163,7 +176,12 @@ class Rustpad {
       const { start, operations } = msg.History;
       if (start > this.revision) {
         console.warn("History message has start greater than last operation.");
-        this.ws?.close();
+        this.dispose();
+        this.options.onDesynchronized?.();
+        return;
+      }
+      if (start === 0 && operations.length < this.revision) {
+        this.recoverFromShortHistory(operations);
         return;
       }
       for (let i = this.revision - start; i < operations.length; i++) {
@@ -172,12 +190,27 @@ class Rustpad {
         if (id === this.me) {
           this.serverAck();
         } else {
+          this.userCursorActivity[id] = Date.now();
           operation = OpSeq.from_str(JSON.stringify(operation));
           this.applyServer(operation);
         }
       }
     } else if (msg.Language !== undefined) {
       this.options.onChangeLanguage?.(msg.Language);
+    } else if (msg.RoomState !== undefined) {
+      this.closed = msg.RoomState.closed_at !== null;
+      this.joined = true;
+      if (msg.RoomState.host_token) {
+        this.options.onHostToken?.(msg.RoomState.host_token);
+      }
+      this.options.onRoomState?.(msg.RoomState);
+      this.sendCursorData();
+      if (this.outstanding) {
+        this.sendOperation(this.outstanding);
+      }
+    } else if (msg.RoomClosed !== undefined) {
+      this.closed = true;
+      this.options.onRoomClosed?.(msg.RoomClosed.closed_at);
     } else if (msg.UserInfo !== undefined) {
       const { id, info } = msg.UserInfo;
       if (id !== this.me) {
@@ -187,6 +220,7 @@ class Rustpad {
         } else {
           delete this.users[id];
           delete this.userCursors[id];
+          delete this.userCursorActivity[id];
         }
         this.updateCursors();
         this.options.onChangeUsers?.(this.users);
@@ -195,6 +229,7 @@ class Rustpad {
       const { id, data } = msg.UserCursor;
       if (id !== this.me) {
         this.userCursors[id] = data;
+        this.userCursorActivity[id] = Date.now();
         this.updateCursors();
       }
     }
@@ -227,6 +262,7 @@ class Rustpad {
   }
 
   private applyClient(operation: OpSeq) {
+    if (this.closed) return;
     if (!this.outstanding) {
       this.sendOperation(operation);
       this.outstanding = operation;
@@ -239,19 +275,60 @@ class Rustpad {
   }
 
   private sendOperation(operation: OpSeq) {
+    if (this.closed) return;
     const op = operation.to_string();
     this.ws?.send(`{"Edit":{"revision":${this.revision},"operation":${op}}}`);
   }
 
+  stopRoom(hostToken: string) {
+    this.ws?.send(`{"StopRoom":{"host_token":${JSON.stringify(hostToken)}}}`);
+  }
+
+  private sendJoin() {
+    this.ws?.send(
+      `{"Join":{"info":${JSON.stringify(this.myInfo)},"host_token":${JSON.stringify(
+        this.options.hostToken,
+      )}}}`,
+    );
+  }
+
   private sendInfo() {
-    if (this.myInfo) {
+    if (this.myInfo && this.joined && !this.closed) {
       this.ws?.send(`{"ClientInfo":${JSON.stringify(this.myInfo)}}`);
     }
   }
 
   private sendCursorData() {
-    if (!this.buffer) {
+    if (this.joined && !this.buffer && !this.closed) {
       this.ws?.send(`{"CursorData":${JSON.stringify(this.cursorData)}}`);
+    }
+  }
+
+  private recoverFromShortHistory(operations: UserOperation[]) {
+    const localValue = this.model.getValue();
+    let serverValue = "";
+    for (const { operation } of operations) {
+      const op = OpSeq.from_str(JSON.stringify(operation));
+      serverValue = op?.apply(serverValue) ?? serverValue;
+    }
+
+    this.ignoreChanges = true;
+    this.model.setValue(serverValue);
+    this.lastValue = serverValue;
+    this.ignoreChanges = false;
+    this.revision = operations.length;
+    this.outstanding = undefined;
+    this.buffer = undefined;
+
+    if (localValue !== serverValue) {
+      const operation = OpSeq.new();
+      operation.delete(unicodeLength(serverValue));
+      operation.insert(localValue);
+      this.ignoreChanges = true;
+      this.model.setValue(localValue);
+      this.ignoreChanges = false;
+      this.lastValue = localValue;
+      this.applyClient(operation);
     }
   }
 
@@ -334,12 +411,22 @@ class Rustpad {
       if (id in this.users) {
         const { hue, name } = this.users[id as any];
         generateCssStyles(hue);
+        generateCursorLabelStyles(id, hue, name);
+        const active =
+          Date.now() - (this.userCursorActivity[Number(id)] ?? 0) < 3000;
 
         for (const cursor of data.cursors) {
           const position = unicodePosition(this.model, cursor);
+          const labelPosition =
+            position.lineNumber === 1
+              ? "remote-cursor-label-below"
+              : "remote-cursor-label-above";
           decorations.push({
             options: {
               className: `remote-cursor-${hue}`,
+              afterContentClassName: `remote-cursor-label-${id} ${
+                active ? labelPosition : "remote-cursor-label-hidden"
+              }`,
               stickiness: 1,
               zIndex: 2,
             },
@@ -381,6 +468,7 @@ class Rustpad {
   }
 
   private onChange(event: editor.IModelContentChangedEvent) {
+    if (this.closed) return;
     if (!this.ignoreChanges) {
       const content = this.lastValue;
       const contentLength = unicodeLength(content);
@@ -432,13 +520,13 @@ type UserOperation = {
   operation: any;
 };
 
-type CursorData = {
-  cursors: number[];
-  selections: [number, number][];
-};
-
 type ServerMsg = {
   Identity?: number;
+  RoomState?: RoomState;
+  RoomClosed?: {
+    replay_url: string;
+    closed_at: number;
+  };
   History?: {
     start: number;
     operations: UserOperation[];
@@ -502,6 +590,42 @@ function generateCssStyles(hue: number) {
     element.appendChild(text);
     document.head.appendChild(element);
   }
+}
+
+const generatedCursorLabels = new Map<string, string>();
+
+function generateCursorLabelStyles(id: string, hue: number, name: string) {
+  const key = `${id}:${hue}:${name}`;
+  if (generatedCursorLabels.get(id) === key) return;
+  generatedCursorLabels.set(id, key);
+  const css = `
+      .monaco-editor .remote-cursor-label-${id}::after {
+        content: ${JSON.stringify(name)};
+        position: absolute;
+        background: hsl(${hue}, 80%, 35%);
+      color: white;
+      border-radius: 3px;
+      font-size: 11px;
+      line-height: 14px;
+      padding: 0 4px;
+      pointer-events: none;
+      white-space: nowrap;
+      z-index: 10;
+    }
+    .monaco-editor .remote-cursor-label-${id}.remote-cursor-label-above::after {
+      transform: translate(2px, -1.35em);
+    }
+    .monaco-editor .remote-cursor-label-${id}.remote-cursor-label-below::after {
+      transform: translate(2px, 0.2em);
+    }
+    .monaco-editor .remote-cursor-label-${id}.remote-cursor-label-hidden::after {
+      display: none;
+    }
+  `;
+  const element = document.createElement("style");
+  const text = document.createTextNode(css);
+  element.appendChild(text);
+  document.head.appendChild(element);
 }
 
 export default Rustpad;

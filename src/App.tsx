@@ -3,15 +3,17 @@ import Editor from "@monaco-editor/react";
 import { editor } from "monaco-editor/esm/vs/editor/editor.api";
 import { useEffect, useRef, useState } from "react";
 import { VscChevronRight, VscFolderOpened, VscGist } from "react-icons/vsc";
+import { OpSeq } from "rustpad-wasm";
 import useLocalStorageState from "use-local-storage-state";
 
 import rustpadRaw from "../rustpad-server/src/rustpad.rs?raw";
 import Footer from "./Footer";
+import NameGate from "./NameGate";
 import ReadCodeConfirm from "./ReadCodeConfirm";
+import ReplayControls from "./ReplayControls";
 import Sidebar from "./Sidebar";
-import animals from "./animals.json";
 import languages from "./languages.json";
-import Rustpad, { UserInfo } from "./rustpad";
+import Rustpad, { CursorData, UserInfo } from "./rustpad";
 import useHash from "./useHash";
 
 function getWsUri(id: string) {
@@ -20,23 +22,41 @@ function getWsUri(id: string) {
   return url.href;
 }
 
-function generateName() {
-  return "Anonymous " + animals[Math.floor(Math.random() * animals.length)];
+function getReplayUri(id: string) {
+  return new URL(`api/replay/${id}`, window.location.href).href;
 }
 
 function generateHue() {
   return Math.floor(Math.random() * 360);
 }
 
+function generateToken() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+}
+
+function getHostToken(id: string) {
+  const key = `hostToken:${id}`;
+  let token = localStorage.getItem(key);
+  if (!token) {
+    token = generateToken();
+    localStorage.setItem(key, token);
+  }
+  return token;
+}
+
 function App() {
   const toast = useToast();
   const [language, setLanguage] = useState("plaintext");
   const [connection, setConnection] = useState<
-    "connected" | "disconnected" | "desynchronized"
+    "connected" | "disconnected" | "desynchronized" | "closed"
   >("disconnected");
   const [users, setUsers] = useState<Record<number, UserInfo>>({});
   const [name, setName] = useLocalStorageState("name", {
-    defaultValue: generateName,
+    defaultValue: "",
   });
   const [hue, setHue] = useLocalStorageState("hue", {
     defaultValue: generateHue,
@@ -47,19 +67,44 @@ function App() {
   });
   const rustpad = useRef<Rustpad>();
   const id = useHash();
+  const [hostToken, setHostToken] = useState(() => getHostToken(id));
+  const [isHost, setIsHost] = useState(false);
+  const [closedAt, setClosedAt] = useState<number | null>(null);
+  const [replayData, setReplayData] = useState<ReplayResponse>();
+  const [replayPositionMs, setReplayPositionMs] = useState(0);
+  const [replaySpeed, setReplaySpeed] = useState(1);
+  const [replayPlaying, setReplayPlaying] = useState(false);
+  const replayDecorations = useRef<string[]>([]);
 
   const [readCodeConfirmOpen, setReadCodeConfirmOpen] = useState(false);
 
+  const hasName = name.trim().length > 0;
+
   useEffect(() => {
-    if (editor?.getModel()) {
+    setHostToken(getHostToken(id));
+    setIsHost(false);
+    setClosedAt(null);
+    setReplayData(undefined);
+    setReplayPositionMs(0);
+    setReplayPlaying(false);
+    setConnection("disconnected");
+  }, [id]);
+
+  useEffect(() => {
+    if (editor?.getModel() && hasName && !replayData) {
       const model = editor.getModel()!;
       model.setValue("");
       model.setEOL(0); // LF
-      rustpad.current = new Rustpad({
+      const client = new Rustpad({
         uri: getWsUri(id),
         editor,
+        userInfo: { name: name.trim(), hue },
+        hostToken,
         onConnected: () => setConnection("connected"),
-        onDisconnected: () => setConnection("disconnected"),
+        onDisconnected: () =>
+          setConnection((current) =>
+            current === "closed" ? "closed" : "disconnected",
+          ),
         onDesynchronized: () => {
           setConnection("desynchronized");
           toast({
@@ -75,21 +120,85 @@ function App() {
           }
         },
         onChangeUsers: setUsers,
+        onHostToken: (token) => {
+          localStorage.setItem(`hostToken:${id}`, token);
+          setHostToken(token);
+        },
+        onRoomState: (state) => {
+          setIsHost(state.is_host);
+          setClosedAt(state.closed_at);
+          if (state.closed_at !== null) {
+            setConnection("closed");
+            loadReplay();
+          }
+        },
+        onRoomClosed: (closedAt) => {
+          setClosedAt(closedAt);
+          setConnection("closed");
+          loadReplay();
+        },
       });
+      rustpad.current = client;
       return () => {
-        rustpad.current?.dispose();
-        rustpad.current = undefined;
+        client.dispose();
+        if (rustpad.current === client) {
+          rustpad.current = undefined;
+        }
       };
     }
-  }, [id, editor, toast, setUsers]);
+  }, [id, editor, toast, setUsers, hasName, hostToken, replayData]);
 
   useEffect(() => {
-    if (connection === "connected") {
+    if (connection === "connected" && !closedAt) {
       rustpad.current?.setInfo({ name, hue });
     }
-  }, [connection, name, hue]);
+  }, [connection, name, hue, closedAt]);
+
+  useEffect(() => {
+    if (!editor?.getModel() || !replayData) return;
+    const model = editor.getModel()!;
+    const frame = buildReplayFrame(replayData, replayPositionMs);
+    if (model.getValue() !== frame.text) {
+      model.setValue(frame.text);
+    }
+    if (frame.language && frame.language !== language) {
+      setLanguage(frame.language);
+    }
+    replayDecorations.current = renderReplayDecorations(
+      model,
+      replayDecorations.current,
+      frame.users,
+      frame.cursors,
+      frame.cursorActivity,
+      replayPositionMs,
+    );
+  }, [editor, replayData, replayPositionMs, language]);
+
+  useEffect(() => {
+    if (!replayPlaying || !replayData) return;
+    const duration = replayDuration(replayData);
+    const interval = window.setInterval(() => {
+      setReplayPositionMs((position) => {
+        const next = Math.min(position + 100 * replaySpeed, duration);
+        if (next >= duration) setReplayPlaying(false);
+        return next;
+      });
+    }, 100);
+    return () => window.clearInterval(interval);
+  }, [replayPlaying, replayData, replaySpeed]);
+
+  async function loadReplay() {
+    rustpad.current?.dispose();
+    rustpad.current = undefined;
+    const response = await fetch(getReplayUri(id));
+    const replay = (await response.json()) as ReplayResponse;
+    setReplayData(replay);
+    setReplayPositionMs(0);
+    setReplayPlaying(false);
+  }
 
   function handleLanguageChange(language: string) {
+    if (closedAt !== null || replayData) return;
     setLanguage(language);
     if (rustpad.current?.setLanguage(language)) {
       toast({
@@ -111,6 +220,7 @@ function App() {
   }
 
   function handleLoadSample(confirmed: boolean) {
+    if (closedAt !== null || replayData) return;
     if (editor?.getModel()) {
       const model = editor.getModel()!;
       const range = model.getFullModelRange();
@@ -137,6 +247,20 @@ function App() {
     setDarkMode(!darkMode);
   }
 
+  function handleStopRoom() {
+    rustpad.current?.stopRoom(hostToken);
+  }
+
+  if (!hasName) {
+    return <NameGate darkMode={darkMode} onSubmit={setName} />;
+  }
+
+  const isClosed = closedAt !== null || replayData !== undefined;
+  const replayDurationMs = replayData ? replayDuration(replayData) : 0;
+  const replayActivityBuckets = replayData
+    ? replayActivity(replayData, 96)
+    : [];
+
   return (
     <Flex
       direction="column"
@@ -161,13 +285,16 @@ function App() {
           connection={connection}
           darkMode={darkMode}
           language={language}
-          currentUser={{ name, hue }}
+          currentUser={{ name: name.trim(), hue }}
           users={users}
           onDarkModeChange={handleDarkModeChange}
           onLanguageChange={handleLanguageChange}
           onLoadSample={() => handleLoadSample(false)}
           onChangeName={(name) => name.length > 0 && setName(name)}
           onChangeColor={() => setHue(generateHue())}
+          isHost={isHost}
+          isClosed={isClosed}
+          onStopRoom={handleStopRoom}
         />
         <ReadCodeConfirm
           isOpen={readCodeConfirmOpen}
@@ -201,15 +328,233 @@ function App() {
               options={{
                 automaticLayout: true,
                 fontSize: 13,
+                readOnly: isClosed,
               }}
               onMount={(editor) => setEditor(editor)}
             />
           </Box>
+          {replayData && (
+            <ReplayControls
+              isPlaying={replayPlaying}
+              positionMs={replayPositionMs}
+              durationMs={replayDurationMs}
+              speed={replaySpeed}
+              activityBuckets={replayActivityBuckets}
+              darkMode={darkMode}
+              onPlayPause={() => setReplayPlaying((playing) => !playing)}
+              onPositionChange={(position) => {
+                setReplayPlaying(false);
+                setReplayPositionMs(position);
+              }}
+              onSpeedChange={setReplaySpeed}
+            />
+          )}
         </Flex>
       </Flex>
       <Footer />
     </Flex>
   );
+}
+
+type ReplayResponse = {
+  id: string;
+  created_at: number;
+  closed_at: number | null;
+  language: string | null;
+  final_text: string;
+  events: ReplayEvent[];
+};
+
+type ReplayEvent =
+  | { type: "UserInfo"; at_ms: number; id: number; info: UserInfo | null }
+  | { type: "Edit"; at_ms: number; id: number; operation: any }
+  | { type: "Cursor"; at_ms: number; id: number; data: CursorData }
+  | { type: "Language"; at_ms: number; language: string }
+  | { type: "Closed"; at_ms: number };
+
+type ReplayFrame = {
+  text: string;
+  language?: string;
+  users: Record<number, UserInfo>;
+  cursors: Record<number, CursorData>;
+  cursorActivity: Record<number, number>;
+};
+
+function replayDuration(replay: ReplayResponse) {
+  return replay.events.reduce((max, event) => Math.max(max, event.at_ms), 0);
+}
+
+function replayActivity(replay: ReplayResponse, bucketCount: number) {
+  const duration = Math.max(replayDuration(replay), 1);
+  const buckets = Array.from({ length: bucketCount }, () => 0);
+  for (const event of replay.events) {
+    const index = Math.min(
+      bucketCount - 1,
+      Math.floor((event.at_ms / duration) * bucketCount),
+    );
+    buckets[index] += 1;
+  }
+  return buckets;
+}
+
+function buildReplayFrame(
+  replay: ReplayResponse,
+  positionMs: number,
+): ReplayFrame {
+  let text = "";
+  let language = replay.language ?? undefined;
+  const users: Record<number, UserInfo> = {};
+  const cursors: Record<number, CursorData> = {};
+  const cursorActivity: Record<number, number> = {};
+
+  for (const event of replay.events) {
+    if (event.at_ms > positionMs) break;
+    if (event.type === "UserInfo") {
+      if (event.info) {
+        users[event.id] = event.info;
+      } else {
+        delete users[event.id];
+        delete cursors[event.id];
+        delete cursorActivity[event.id];
+      }
+    } else if (event.type === "Edit") {
+      cursorActivity[event.id] = event.at_ms;
+      const operation = OpSeq.from_str(JSON.stringify(event.operation));
+      if (operation) {
+        text = operation.apply(text) ?? text;
+        for (const data of Object.values(cursors)) {
+          data.cursors = data.cursors.map((cursor) =>
+            operation.transform_index(cursor),
+          );
+          data.selections = data.selections.map(([start, end]) => [
+            operation.transform_index(start),
+            operation.transform_index(end),
+          ]);
+        }
+      }
+    } else if (event.type === "Cursor") {
+      cursors[event.id] = {
+        cursors: [...event.data.cursors],
+        selections: event.data.selections.map(([start, end]) => [start, end]),
+      };
+      cursorActivity[event.id] = event.at_ms;
+    } else if (event.type === "Language") {
+      language = event.language;
+    }
+  }
+
+  return { text, language, users, cursors, cursorActivity };
+}
+
+function renderReplayDecorations(
+  model: editor.ITextModel,
+  oldDecorations: string[],
+  users: Record<number, UserInfo>,
+  cursors: Record<number, CursorData>,
+  cursorActivity: Record<number, number>,
+  positionMs: number,
+) {
+  const decorations: editor.IModelDeltaDecoration[] = [];
+  for (const [id, data] of Object.entries(cursors)) {
+    const user = users[Number(id)];
+    if (!user) continue;
+    generateReplayCursorStyles(id, user);
+    const active = positionMs - (cursorActivity[Number(id)] ?? 0) < 3000;
+    for (const cursor of data.cursors) {
+      const position = unicodePosition(model, cursor);
+      const labelPosition =
+        position.lineNumber === 1
+          ? "replay-cursor-label-below"
+          : "replay-cursor-label-above";
+      decorations.push({
+        options: {
+          className: `replay-cursor-${id}`,
+          afterContentClassName: `replay-cursor-label-${id} ${
+            active ? labelPosition : "replay-cursor-label-hidden"
+          }`,
+          stickiness: 1,
+          zIndex: 2,
+        },
+        range: {
+          startLineNumber: position.lineNumber,
+          startColumn: position.column,
+          endLineNumber: position.lineNumber,
+          endColumn: position.column,
+        },
+      });
+    }
+    for (const [start, end] of data.selections) {
+      const position = unicodePosition(model, start);
+      const positionEnd = unicodePosition(model, end);
+      decorations.push({
+        options: {
+          className: `replay-selection-${id}`,
+          hoverMessage: { value: user.name },
+          stickiness: 1,
+          zIndex: 1,
+        },
+        range: {
+          startLineNumber: position.lineNumber,
+          startColumn: position.column,
+          endLineNumber: positionEnd.lineNumber,
+          endColumn: positionEnd.column,
+        },
+      });
+    }
+  }
+  return model.deltaDecorations(oldDecorations, decorations);
+}
+
+function unicodePosition(model: editor.ITextModel, offset: number) {
+  const value = model.getValue();
+  let offsetUTF16 = 0;
+  for (const char of value) {
+    if (offset <= 0) break;
+    offsetUTF16 += char.length;
+    offset -= 1;
+  }
+  return model.getPositionAt(offsetUTF16);
+}
+
+const generatedReplayStyles = new Map<string, string>();
+
+function generateReplayCursorStyles(id: string, user: UserInfo) {
+  const key = `${user.hue}:${user.name}`;
+  if (generatedReplayStyles.get(id) === key) return;
+  generatedReplayStyles.set(id, key);
+  const css = `
+    .monaco-editor .replay-selection-${id} {
+      background-color: hsla(${user.hue}, 90%, 80%, 0.5);
+    }
+    .monaco-editor .replay-cursor-${id} {
+      border-left: 2px solid hsl(${user.hue}, 90%, 25%);
+    }
+    .monaco-editor .replay-cursor-label-${id}::after {
+      content: ${JSON.stringify(user.name)};
+      position: absolute;
+      background: hsl(${user.hue}, 80%, 35%);
+      color: white;
+      border-radius: 3px;
+      font-size: 11px;
+      line-height: 14px;
+      padding: 0 4px;
+      pointer-events: none;
+      white-space: nowrap;
+      z-index: 10;
+    }
+    .monaco-editor .replay-cursor-label-${id}.replay-cursor-label-above::after {
+      transform: translate(2px, -1.35em);
+    }
+    .monaco-editor .replay-cursor-label-${id}.replay-cursor-label-below::after {
+      transform: translate(2px, 0.2em);
+    }
+    .monaco-editor .replay-cursor-label-${id}.replay-cursor-label-hidden::after {
+      display: none;
+    }
+  `;
+  const element = document.createElement("style");
+  element.appendChild(document.createTextNode(css));
+  document.head.appendChild(element);
 }
 
 export default App;

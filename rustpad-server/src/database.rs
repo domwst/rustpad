@@ -3,6 +3,7 @@
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
+use serde_json::Value;
 use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, SqlitePool};
 
 /// Represents a document persisted in database storage.
@@ -12,6 +13,14 @@ pub struct PersistedDocument {
     pub text: String,
     /// Language of the document for editor syntax highlighting.
     pub language: Option<String>,
+    /// Unix timestamp in milliseconds when the room was created.
+    pub created_at: u64,
+    /// Unix timestamp in milliseconds when the room was stopped.
+    pub closed_at: Option<u64>,
+    /// Opaque token that grants host privileges.
+    pub host_token: Option<String>,
+    /// JSON array containing replay timeline events.
+    pub replay_events: Value,
 }
 
 /// A driver for database operations wrapping a pool connection.
@@ -38,11 +47,33 @@ impl Database {
 
     /// Load the text of a document from the database.
     pub async fn load(&self, document_id: &str) -> Result<PersistedDocument> {
-        sqlx::query_as(r#"SELECT text, language FROM document WHERE id = $1"#)
-            .bind(document_id)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| e.into())
+        let row: (
+            String,
+            Option<String>,
+            i64,
+            Option<i64>,
+            Option<String>,
+            String,
+        ) = sqlx::query_as(
+            r#"
+SELECT
+    text, language, created_at, closed_at, host_token, replay_events
+FROM
+    document
+WHERE
+    id = $1"#,
+        )
+        .bind(document_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(PersistedDocument {
+            text: row.0,
+            language: row.1,
+            created_at: row.2 as u64,
+            closed_at: row.3.map(|value| value as u64),
+            host_token: row.4,
+            replay_events: serde_json::from_str(&row.5)?,
+        })
     }
 
     /// Store the text of a document in the database.
@@ -50,16 +81,24 @@ impl Database {
         let result = sqlx::query(
             r#"
 INSERT INTO
-    document (id, text, language)
+    document (id, text, language, created_at, closed_at, host_token, replay_events)
 VALUES
-    ($1, $2, $3)
+    ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT(id) DO UPDATE SET
     text = excluded.text,
-    language = excluded.language"#,
+    language = excluded.language,
+    created_at = excluded.created_at,
+    closed_at = excluded.closed_at,
+    host_token = excluded.host_token,
+    replay_events = excluded.replay_events"#,
         )
         .bind(document_id)
         .bind(&document.text)
         .bind(&document.language)
+        .bind(document.created_at as i64)
+        .bind(document.closed_at.map(|value| value as i64))
+        .bind(&document.host_token)
+        .bind(document.replay_events.to_string())
         .execute(&self.pool)
         .await?;
         if result.rows_affected() != 1 {

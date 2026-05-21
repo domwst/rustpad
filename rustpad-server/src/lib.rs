@@ -120,6 +120,10 @@ fn backend(config: ServerConfig) -> BoxedFilter<(impl Reply,)> {
         .and(state_filter.clone())
         .and_then(text_handler);
 
+    let replay = warp::path!("replay" / String)
+        .and(state_filter.clone())
+        .and_then(replay_handler);
+
     let start_time = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .expect("SystemTime returned before UNIX_EPOCH")
@@ -129,7 +133,7 @@ fn backend(config: ServerConfig) -> BoxedFilter<(impl Reply,)> {
         .and(state_filter)
         .and_then(stats_handler);
 
-    socket.or(text).or(stats).boxed()
+    socket.or(text).or(replay).or(stats).boxed()
 }
 
 /// Handler for the `/api/socket/{id}` endpoint.
@@ -140,8 +144,10 @@ async fn socket_handler(id: String, ws: Ws, state: ServerState) -> Result<impl R
         Entry::Occupied(e) => e.into_ref(),
         Entry::Vacant(e) => {
             let rustpad = Arc::new(match &state.database {
-                Some(db) => db.load(&id).await.map(Rustpad::from).unwrap_or_default(),
-                None => Rustpad::default(),
+                Some(db) => {
+                    Rustpad::new(Some(id.clone()), Some(db.clone()), db.load(&id).await.ok())
+                }
+                None => Rustpad::new(Some(id.clone()), None, None),
             });
             if let Some(db) = &state.database {
                 tokio::spawn(persister(id, Arc::clone(&rustpad), db.clone()));
@@ -154,6 +160,23 @@ async fn socket_handler(id: String, ws: Ws, state: ServerState) -> Result<impl R
     value.last_accessed = Instant::now();
     let rustpad = Arc::clone(&value.rustpad);
     Ok(ws.on_upgrade(|socket| async move { rustpad.on_connection(socket).await }))
+}
+
+/// Handler for the `/api/replay/{id}` endpoint.
+async fn replay_handler(id: String, state: ServerState) -> Result<impl Reply, Rejection> {
+    Ok(match state.documents.get(&id) {
+        Some(value) => warp::reply::json(&value.rustpad.replay(id)),
+        None => {
+            if let Some(db) = &state.database {
+                match db.load(&id).await {
+                    Ok(document) => warp::reply::json(&Rustpad::replay_from_document(id, document)),
+                    Err(_) => warp::reply::json(&Rustpad::default().replay(id)),
+                }
+            } else {
+                warp::reply::json(&Rustpad::default().replay(id))
+            }
+        }
+    })
 }
 
 /// Handler for the `/api/text/{id}` endpoint.

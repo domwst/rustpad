@@ -42,3 +42,13 @@ pub async fn expect_text(filter: &BoxedFilter<(impl Reply + 'static,)>, id: &str
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.body(), text);
 }
+
+/// Fetch replay JSON for a document.
+pub async fn replay(filter: &BoxedFilter<(impl Reply + 'static,)>, id: &str) -> Value {
+    let resp = warp::test::request()
+        .path(&format!("/api/replay/{}", id))
+        .reply(filter)
+        .await;
+    assert_eq!(resp.status(), 200);
+    serde_json::from_slice(resp.body()).expect("replay response should be JSON")
+}

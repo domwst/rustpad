@@ -38,6 +38,10 @@ async fn test_database() -> Result<()> {
     let doc1 = PersistedDocument {
         text: "Hello Text".into(),
         language: None,
+        created_at: 0,
+        closed_at: None,
+        host_token: None,
+        replay_events: json!([]),
     };
 
     assert!(database.store("hello", &doc1).await.is_ok());
@@ -47,6 +51,10 @@ async fn test_database() -> Result<()> {
     let doc2 = PersistedDocument {
         text: "print('World Text :)')".into(),
         language: Some("python".into()),
+        created_at: 42,
+        closed_at: Some(96),
+        host_token: Some("host".into()),
+        replay_events: json!([{ "type": "Closed", "at_ms": 54 }]),
     };
 
     assert!(database.store("world", &doc2).await.is_ok());

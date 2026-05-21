@@ -22,7 +22,7 @@ import type { UserInfo } from "./rustpad";
 
 export type SidebarProps = {
   documentId: string;
-  connection: "connected" | "disconnected" | "desynchronized";
+  connection: "connected" | "disconnected" | "desynchronized" | "closed";
   darkMode: boolean;
   language: string;
   currentUser: UserInfo;
@@ -32,6 +32,9 @@ export type SidebarProps = {
   onLoadSample: () => void;
   onChangeName: (name: string) => void;
   onChangeColor: () => void;
+  isHost: boolean;
+  isClosed: boolean;
+  onStopRoom: () => void;
 };
 
 function Sidebar({
@@ -46,6 +49,9 @@ function Sidebar({
   onLoadSample,
   onChangeName,
   onChangeColor,
+  isHost,
+  isClosed,
+  onStopRoom,
 }: SidebarProps) {
   const toast = useToast();
 
@@ -122,6 +128,29 @@ function Sidebar({
           </Button>
         </InputRightElement>
       </InputGroup>
+
+      {isHost && !isClosed && (
+        <Button
+          size="sm"
+          colorScheme="red"
+          variant="outline"
+          mt={3}
+          w="full"
+          onClick={onStopRoom}
+        >
+          Stop room
+        </Button>
+      )}
+
+      {isClosed && (
+        <Text
+          fontSize="sm"
+          mt={3}
+          color={darkMode ? "purple.200" : "purple.700"}
+        >
+          This room is stopped. The same link now opens the replay.
+        </Text>
+      )}
 
       <Heading mt={4} mb={1.5} size="sm">
         Active Users

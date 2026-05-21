@@ -1,0 +1,4 @@
+ALTER TABLE document ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE document ADD COLUMN closed_at INTEGER;
+ALTER TABLE document ADD COLUMN host_token TEXT;
+ALTER TABLE document ADD COLUMN replay_events TEXT NOT NULL DEFAULT '[]';
