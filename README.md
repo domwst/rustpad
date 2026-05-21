@@ -33,8 +33,15 @@ after 24 hours of inactivity.
 
 ## Development setup
 
-To run this application, you need to install Rust, `wasm-pack`, and Node.js.
-Then, build the WebAssembly portion of the app:
+If you use Nix, enter the development shell to get Rust with the WebAssembly
+target, `wasm-pack`, Node.js, npm, SQLite, OpenSSL, and related build tools:
+
+```
+nix develop
+```
+
+Without Nix, install Rust, `wasm-pack`, and Node.js manually. Then, build the
+WebAssembly portion of the app:
 
 ```
 wasm-pack build rustpad-wasm
