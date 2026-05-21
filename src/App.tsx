@@ -1,6 +1,7 @@
 import { Box, Flex, HStack, Icon, Text, useToast } from "@chakra-ui/react";
 import Editor from "@monaco-editor/react";
 import { editor } from "monaco-editor/esm/vs/editor/editor.api";
+import type { VimAdapterInstance } from "monaco-vim";
 import { useEffect, useRef, useState } from "react";
 import { VscChevronRight, VscFolderOpened, VscGist } from "react-icons/vsc";
 import { OpSeq } from "rustpad-wasm";
@@ -65,7 +66,12 @@ function App() {
   const [darkMode, setDarkMode] = useLocalStorageState("darkMode", {
     defaultValue: false,
   });
+  const [vimMode, setVimMode] = useLocalStorageState("vimMode", {
+    defaultValue: false,
+  });
   const rustpad = useRef<Rustpad>();
+  const vimModeRef = useRef<VimAdapterInstance>();
+  const vimStatusRef = useRef<HTMLDivElement>(null);
   const id = useHash();
   const [hostToken, setHostToken] = useState(() => getHostToken(id));
   const [isHost, setIsHost] = useState(false);
@@ -79,6 +85,7 @@ function App() {
   const [readCodeConfirmOpen, setReadCodeConfirmOpen] = useState(false);
 
   const hasName = name.trim().length > 0;
+  const isClosed = closedAt !== null || replayData !== undefined;
 
   useEffect(() => {
     setHostToken(getHostToken(id));
@@ -89,6 +96,32 @@ function App() {
     setReplayPlaying(false);
     setConnection("disconnected");
   }, [id]);
+
+  useEffect(() => {
+    const current = vimModeRef.current;
+    current?.dispose();
+    vimModeRef.current = undefined;
+
+    if (!editor || !vimMode || isClosed || !vimStatusRef.current) return;
+
+    let disposed = false;
+    let instance: VimAdapterInstance | undefined;
+    const statusNode = vimStatusRef.current;
+    import("monaco-vim").then(({ initVimMode }) => {
+      if (disposed) return;
+      instance = initVimMode(editor, statusNode);
+      vimModeRef.current = instance;
+      editor.focus();
+    });
+
+    return () => {
+      disposed = true;
+      instance?.dispose();
+      if (vimModeRef.current === instance) {
+        vimModeRef.current = undefined;
+      }
+    };
+  }, [editor, vimMode, isClosed]);
 
   useEffect(() => {
     if (editor?.getModel() && hasName && !replayData) {
@@ -247,6 +280,10 @@ function App() {
     setDarkMode(!darkMode);
   }
 
+  function handleVimModeChange() {
+    setVimMode(!vimMode);
+  }
+
   function handleStopRoom() {
     rustpad.current?.stopRoom(hostToken);
   }
@@ -255,7 +292,6 @@ function App() {
     return <NameGate darkMode={darkMode} onSubmit={setName} />;
   }
 
-  const isClosed = closedAt !== null || replayData !== undefined;
   const replayDurationMs = replayData ? replayDuration(replayData) : 0;
   const replayActivityBuckets = replayData
     ? replayActivity(replayData, 96)
@@ -294,7 +330,9 @@ function App() {
           onChangeColor={() => setHue(generateHue())}
           isHost={isHost}
           isClosed={isClosed}
+          vimMode={vimMode}
           onStopRoom={handleStopRoom}
+          onVimModeChange={handleVimModeChange}
         />
         <ReadCodeConfirm
           isOpen={readCodeConfirmOpen}
@@ -320,6 +358,14 @@ function App() {
             <Icon as={VscChevronRight} fontSize="md" />
             <Icon as={VscGist} fontSize="md" color="purple.500" />
             <Text>{id}</Text>
+            <Box flex={1} />
+            <Box
+              ref={vimStatusRef}
+              minW="7rem"
+              textAlign="right"
+              color={vimMode && !isClosed ? "green.500" : "gray.500"}
+              fontFamily="mono"
+            />
           </HStack>
           <Box flex={1} minH={0}>
             <Editor

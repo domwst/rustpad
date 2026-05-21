@@ -1,0 +1,78 @@
+diff --git a/node_modules/monaco-vim/dist/index.cjs b/node_modules/monaco-vim/dist/index.cjs
+index 15129c2..441af2d 100644
+--- a/node_modules/monaco-vim/dist/index.cjs
++++ b/node_modules/monaco-vim/dist/index.cjs
+@@ -8,9 +8,9 @@ let monaco_editor_esm_vs_editor_common_commands_shiftCommand = require("monaco-e
+ var _CMAdapter;
+ const VerticalRevealType = { Bottom: 4 };
+ const EditorOptConstants = {
+-	readOnly: 65,
+-	cursorWidth: 20,
+-	fontInfo: 32
++	readOnly: 92,
++	cursorWidth: 31,
++	fontInfo: 50
+ };
+ const nonASCIISingleCaseWordChar = /[\u00df\u0587\u0590-\u05f4\u0600-\u06ff\u3040-\u309f\u30a0-\u30ff\u3400-\u4db5\u4e00-\u9fcc\uac00-\ud7af]/;
+ function isWordCharBasic(ch) {
+@@ -140,7 +140,7 @@ function monacoToCmKey(e, skip = false) {
+ 	let keyName = monaco_editor_esm_vs_editor_editor_api.KeyCode[e.keyCode];
+ 	if (e.key) {
+ 		keyName = e.key;
+-		addQuotes = false;
++		addQuotes = e.key.length === 1;
+ 	}
+ 	let key = keyName;
+ 	let skipOnlyShiftCheck = skip;
+diff --git a/node_modules/monaco-vim/dist/index.mjs b/node_modules/monaco-vim/dist/index.mjs
+index bb2e8e0..4c0af07 100644
+--- a/node_modules/monaco-vim/dist/index.mjs
++++ b/node_modules/monaco-vim/dist/index.mjs
+@@ -8,9 +8,9 @@ import { ShiftCommand } from "monaco-editor/esm/vs/editor/common/commands/shiftC
+ var _CMAdapter;
+ const VerticalRevealType = { Bottom: 4 };
+ const EditorOptConstants = {
+-	readOnly: 65,
+-	cursorWidth: 20,
+-	fontInfo: 32
++	readOnly: 92,
++	cursorWidth: 31,
++	fontInfo: 50
+ };
+ const nonASCIISingleCaseWordChar = /[\u00df\u0587\u0590-\u05f4\u0600-\u06ff\u3040-\u309f\u30a0-\u30ff\u3400-\u4db5\u4e00-\u9fcc\uac00-\ud7af]/;
+ function isWordCharBasic(ch) {
+@@ -140,7 +140,7 @@ function monacoToCmKey(e, skip = false) {
+ 	let keyName = KeyCode[e.keyCode];
+ 	if (e.key) {
+ 		keyName = e.key;
+-		addQuotes = false;
++		addQuotes = e.key.length === 1;
+ 	}
+ 	let key = keyName;
+ 	let skipOnlyShiftCheck = skip;
+diff --git a/node_modules/monaco-vim/dist/monaco-vim.umd.js b/node_modules/monaco-vim/dist/monaco-vim.umd.js
+index 8509a46..6d0ecc8 100644
+--- a/node_modules/monaco-vim/dist/monaco-vim.umd.js
++++ b/node_modules/monaco-vim/dist/monaco-vim.umd.js
+@@ -3460,9 +3460,9 @@ var ShiftCommand = class ShiftCommand {
+ var _CMAdapter;
+ const VerticalRevealType = { Bottom: 4 };
+ const EditorOptConstants = {
+-	readOnly: 65,
+-	cursorWidth: 20,
+-	fontInfo: 32
++	readOnly: 92,
++	cursorWidth: 31,
++	fontInfo: 50
+ };
+ const nonASCIISingleCaseWordChar = /[\u00df\u0587\u0590-\u05f4\u0600-\u06ff\u3040-\u309f\u30a0-\u30ff\u3400-\u4db5\u4e00-\u9fcc\uac00-\ud7af]/;
+ function isWordCharBasic(ch) {
+@@ -3592,7 +3592,7 @@ function monacoToCmKey(e, skip = false) {
+ 	let keyName = monaco_editor_esm_vs_editor_editor_api.KeyCode[e.keyCode];
+ 	if (e.key) {
+ 		keyName = e.key;
+-		addQuotes = false;
++		addQuotes = e.key.length === 1;
+ 	}
+ 	let key = keyName;
+ 	let skipOnlyShiftCheck = skip;

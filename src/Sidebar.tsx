@@ -34,7 +34,9 @@ export type SidebarProps = {
   onChangeColor: () => void;
   isHost: boolean;
   isClosed: boolean;
+  vimMode: boolean;
   onStopRoom: () => void;
+  onVimModeChange: () => void;
 };
 
 function Sidebar({
@@ -51,7 +53,9 @@ function Sidebar({
   onChangeColor,
   isHost,
   isClosed,
+  vimMode,
   onStopRoom,
+  onVimModeChange,
 }: SidebarProps) {
   const toast = useToast();
 
@@ -84,6 +88,11 @@ function Sidebar({
       <Flex justifyContent="space-between" mt={4} mb={1.5} w="full">
         <Heading size="sm">Dark Mode</Heading>
         <Switch isChecked={darkMode} onChange={onDarkModeChange} />
+      </Flex>
+
+      <Flex justifyContent="space-between" mt={4} mb={1.5} w="full">
+        <Heading size="sm">Vim Mode</Heading>
+        <Switch isChecked={vimMode} onChange={onVimModeChange} />
       </Flex>
 
       <Heading mt={4} mb={1.5} size="sm">
