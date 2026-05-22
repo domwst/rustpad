@@ -287,8 +287,8 @@ function App() {
       const model = editor.getModel()!;
       const range = model.getFullModelRange();
 
-      // If there are at least 10 lines of code, ask for confirmation.
-      if (range.endLineNumber >= 10 && !confirmed) {
+      // If there are at least 2 lines of code, ask for confirmation.
+      if (range.endLineNumber >= 2 && !confirmed) {
         setReadCodeConfirmOpen(true);
         return;
       }
