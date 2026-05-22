@@ -82,6 +82,7 @@ function App() {
   const [replayPositionMs, setReplayPositionMs] = useState(0);
   const [replaySpeed, setReplaySpeed] = useState(1);
   const [replayPlaying, setReplayPlaying] = useState(false);
+  const [roomChecked, setRoomChecked] = useState(false);
   const replayDecorations = useRef<string[]>([]);
 
   const [readCodeConfirmOpen, setReadCodeConfirmOpen] = useState(false);
@@ -96,7 +97,32 @@ function App() {
     setReplayData(undefined);
     setReplayPositionMs(0);
     setReplayPlaying(false);
+    setRoomChecked(false);
     setConnection("disconnected");
+  }, [id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function checkRoom() {
+      try {
+        const response = await fetch(getReplayUri(id));
+        const replay = (await response.json()) as ReplayResponse;
+        if (cancelled) return;
+        if (replay.closed_at !== null) {
+          setClosedAt(replay.closed_at);
+          setConnection("closed");
+          setReplayData(replay);
+          setReplayPositionMs(0);
+          setReplayPlaying(false);
+        }
+      } finally {
+        if (!cancelled) setRoomChecked(true);
+      }
+    }
+    checkRoom();
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
   useEffect(() => {
@@ -230,6 +256,7 @@ function App() {
     setReplayData(replay);
     setReplayPositionMs(0);
     setReplayPlaying(false);
+    setRoomChecked(true);
   }
 
   function handleLanguageChange(language: string) {
@@ -290,7 +317,21 @@ function App() {
     rustpad.current?.stopRoom(hostToken);
   }
 
-  if (!hasName) {
+  if (!hasName && !roomChecked && !replayData) {
+    return (
+      <Box
+        minH="100vh"
+        bgColor={darkMode ? "#1e1e1e" : "white"}
+        color={darkMode ? "#cbcaca" : "inherit"}
+        display="grid"
+        placeItems="center"
+      >
+        Loading room...
+      </Box>
+    );
+  }
+
+  if (!hasName && !replayData) {
     return <NameGate darkMode={darkMode} onSubmit={setName} />;
   }
 
@@ -323,7 +364,7 @@ function App() {
           connection={connection}
           darkMode={darkMode}
           language={language}
-          currentUser={{ name: name.trim(), hue }}
+          currentUser={{ name: hasName ? name.trim() : "Replay viewer", hue }}
           users={users}
           onDarkModeChange={handleDarkModeChange}
           onLanguageChange={handleLanguageChange}
