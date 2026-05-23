@@ -1,4 +1,5 @@
 import {
+  Box,
   Button,
   ButtonGroup,
   HStack,
@@ -20,12 +21,13 @@ import { FaPalette } from "react-icons/fa";
 import { VscAccount } from "react-icons/vsc";
 
 import { UserInfo } from "./rustpad";
+import { USER_COLOR_HUES } from "./userColors";
 
 type UserProps = {
   info: UserInfo;
   isMe?: boolean;
   onChangeName?: (name: string) => void;
-  onChangeColor?: () => void;
+  onChangeColor?: (hue: number) => void;
   darkMode: boolean;
 };
 
@@ -84,15 +86,35 @@ function User({
             maxLength={25}
             onChange={(event) => onChangeName?.(event.target.value)}
           />
-          <Button
-            size="sm"
-            w="100%"
-            leftIcon={<FaPalette />}
-            colorScheme={darkMode ? "whiteAlpha" : "gray"}
-            onClick={onChangeColor}
-          >
-            Change Color
-          </Button>
+          <HStack spacing={1.5} align="center" flexWrap="wrap">
+            <HStack spacing={1} w="full" color={darkMode ? "gray.300" : "gray.600"}>
+              <Icon as={FaPalette} />
+              <Text fontSize="sm" fontWeight="medium">
+                Color
+              </Text>
+            </HStack>
+            {USER_COLOR_HUES.map((hue) => {
+              const selected = hue === info.hue;
+              return (
+                <Box
+                  as="button"
+                  key={hue}
+                  type="button"
+                  aria-label={`Choose color ${hue}`}
+                  title={`Choose color ${hue}`}
+                  w={6}
+                  h={6}
+                  rounded="full"
+                  bgColor={`hsl(${hue}, 80%, 45%)`}
+                  border="2px solid"
+                  borderColor={selected ? "blue.400" : darkMode ? "gray.600" : "white"}
+                  boxShadow={selected ? "0 0 0 2px var(--chakra-colors-blue-400)" : "sm"}
+                  _hover={{ transform: "scale(1.08)" }}
+                  onClick={() => onChangeColor?.(hue)}
+                />
+              );
+            })}
+          </HStack>
         </PopoverBody>
         <PopoverFooter
           display="flex"

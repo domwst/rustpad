@@ -16,6 +16,7 @@ import Sidebar from "./Sidebar";
 import languages from "./languages.json";
 import Rustpad, { CursorData, UserInfo } from "./rustpad";
 import useHash from "./useHash";
+import { randomUserColorHue } from "./userColors";
 
 const CURSOR_LABEL_VISIBLE_MS = 1500;
 
@@ -27,10 +28,6 @@ function getWsUri(id: string) {
 
 function getReplayUri(id: string) {
   return new URL(`api/replay/${id}`, window.location.href).href;
-}
-
-function generateHue() {
-  return Math.floor(Math.random() * 360);
 }
 
 function generateToken() {
@@ -62,7 +59,7 @@ function App() {
     defaultValue: "",
   });
   const [hue, setHue] = useLocalStorageState("hue", {
-    defaultValue: generateHue,
+    defaultValue: randomUserColorHue,
   });
   const [editor, setEditor] = useState<editor.IStandaloneCodeEditor>();
   const [darkMode, setDarkMode] = useLocalStorageState("darkMode", {
@@ -370,7 +367,7 @@ function App() {
           onLanguageChange={handleLanguageChange}
           onLoadSample={() => handleLoadSample(false)}
           onChangeName={(name) => name.length > 0 && setName(name)}
-          onChangeColor={() => setHue(generateHue())}
+          onChangeColor={setHue}
           isHost={isHost}
           isClosed={isClosed}
           vimMode={vimMode}

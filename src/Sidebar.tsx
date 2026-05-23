@@ -31,7 +31,7 @@ export type SidebarProps = {
   onLanguageChange: (language: string) => void;
   onLoadSample: () => void;
   onChangeName: (name: string) => void;
-  onChangeColor: () => void;
+  onChangeColor: (hue: number) => void;
   isHost: boolean;
   isClosed: boolean;
   vimMode: boolean;
